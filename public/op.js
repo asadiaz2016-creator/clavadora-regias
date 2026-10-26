@@ -1,0 +1,527 @@
+let turnoActivo = null;
+let modelos = [];
+let modeloSel = null;
+let motivoSel = null;
+let prodRows = [];
+let muertosRows = [];
+let ultimaHora = null;
+
+const HORAS_MATUTINO = [
+  '06:00-07:00','07:00-08:00','08:00-09:00',
+  '09:00-09:30',
+  // 09:30-10:00 Lunch
+  '10:00-11:00','11:00-12:00',
+  '12:00-12:00', // break placeholder
+  '12:15-13:00','13:00-14:00','14:00-14:30'
+];
+
+const HORAS_VESPERTINO = [
+  '14:30-15:30','15:30-16:30','16:30-17:30','17:30-18:00',
+  // 18:00-18:30 Lunch
+  '18:30-19:30','19:30-20:30','20:30-21:30','21:30-22:30'
+];
+
+const HORAS_MATUTINO_CLEAN = [
+  '06:00-07:00','07:00-08:00','08:00-09:00','09:00-09:30',
+  '10:00-11:00','11:00-12:00',
+  '12:15-13:00','13:00-14:00','14:00-15:00','15:00-16:00','16:00-17:00','17:00-18:00'
+];
+
+const HORAS_VESPERTINO_CLEAN = [
+  '14:30-15:30','15:30-16:30','16:30-17:30','17:30-18:00',
+  '18:30-19:30','19:30-20:30','20:30-21:30','21:30-22:30'
+];
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', async () => {
+  const hoy = new Date();
+  document.getElementById('fechaHoy').textContent = hoy.toLocaleDateString('en-US', {
+    weekday:'long', year:'numeric', month:'long', day:'numeric'
+  });
+
+  modelos = await api('GET', '/api/modelos');
+
+  localStorage.removeItem('turnoActivo');
+  document.getElementById('pantallaInicio').classList.add('activa');
+});
+
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Error');
+  return data;
+}
+
+function horaActual() {
+  return turnoActivo?.turno === 'Second' ? '14:30-15:30' : '06:00-07:00';
+}
+
+function fechaHoy() {
+  return new Date().toISOString().split('T')[0];
+}
+
+function siguienteHora(horaActual, listaHoras) {
+  const idx = listaHoras.indexOf(horaActual);
+  if (idx >= 0 && idx < listaHoras.length - 1) return listaHoras[idx + 1];
+  return listaHoras[0];
+}
+
+function llenarHoras(selectId) {
+  const sel = document.getElementById(selectId);
+  sel.innerHTML = '';
+  const esMat = turnoActivo?.turno === 'First';
+  const horas = esMat ? HORAS_MATUTINO_CLEAN : HORAS_VESPERTINO_CLEAN;
+  const horaDefault = ultimaHora ? siguienteHora(ultimaHora, horas) : horas[0];
+
+  if (esMat) {
+    sel.appendChild(optGroup('--- Before lunch ---'));
+    ['06:00-07:00','07:00-08:00','08:00-09:00','09:00-09:30'].forEach(h => sel.appendChild(makeOpt(h, horaDefault)));
+    sel.appendChild(optGroup('☕ Lunch 9:30-10:00'));
+    sel.appendChild(optGroup('--- After lunch ---'));
+    ['10:00-11:00','11:00-12:00'].forEach(h => sel.appendChild(makeOpt(h, horaDefault)));
+    sel.appendChild(optGroup('⏸ Break 12:00-12:15'));
+    sel.appendChild(optGroup('--- After break ---'));
+    ['12:15-13:00','13:00-14:00','14:00-15:00','15:00-16:00','16:00-17:00','17:00-18:00'].forEach(h => sel.appendChild(makeOpt(h, horaDefault)));
+  } else {
+    sel.appendChild(optGroup('--- Before lunch ---'));
+    ['14:30-15:30','15:30-16:30','16:30-17:30','17:30-18:00'].forEach(h => sel.appendChild(makeOpt(h, horaDefault)));
+    sel.appendChild(optGroup('☕ Lunch 6:00-6:30 pm'));
+    sel.appendChild(optGroup('--- After lunch ---'));
+    ['18:30-19:30','19:30-20:30','20:30-21:30','21:30-22:30'].forEach(h => sel.appendChild(makeOpt(h, horaDefault)));
+  }
+}
+
+function makeOpt(h, horaDefault) {
+  const opt = document.createElement('option');
+  opt.value = h; opt.textContent = h;
+  if (h === horaDefault) opt.selected = true;
+  return opt;
+}
+
+function optGroup(label) {
+  const og = document.createElement('optgroup');
+  og.label = label;
+  return og;
+}
+
+// ── START SCREEN ──────────────────────────────────────────────────────────────
+async function seleccionarTurno(turno) {
+  const errEl = document.getElementById('errorInicio');
+  errEl.classList.add('hidden');
+  try {
+    const existente = await api('GET', `/api/turnos/activo/${turno}`);
+    if (existente) {
+      turnoActivo = existente;
+    } else {
+      turnoActivo = await api('POST', '/api/turnos', { turno, fecha: fechaHoy() });
+    }
+    localStorage.setItem('turnoActivo', JSON.stringify(turnoActivo));
+    mostrarPantallaOp();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.classList.remove('hidden');
+  }
+}
+
+function mostrarPantallaOp() {
+  document.getElementById('pantallaInicio').classList.remove('activa');
+  document.getElementById('pantallaOp').classList.add('activa');
+  document.getElementById('opTurnoLabel').textContent = `${turnoActivo.turno} Shift`;
+  const [y,m,d] = turnoActivo.fecha.split('-');
+  document.getElementById('opFechaLabel').textContent = `${m}/${d}/${y}`;
+  cargarDatos();
+}
+
+async function cargarDatos() {
+  [prodRows, muertosRows] = await Promise.all([
+    api('GET', `/api/produccion/${turnoActivo.id}`),
+    api('GET', `/api/tiempos/${turnoActivo.id}`)
+  ]);
+  renderProd();
+  renderMuertos();
+  actualizarTotal();
+}
+
+function actualizarTotal() {
+  const total = prodRows.reduce((s, r) => s + r.cantidad, 0);
+  document.getElementById('opTotalNum').textContent = total.toLocaleString();
+}
+
+// ── RENDER PRODUCTION ─────────────────────────────────────────────────────────
+function renderProd() {
+  const el = document.getElementById('listaProd');
+  if (!prodRows.length) {
+    el.innerHTML = '<div class="empty-state">No records yet</div>';
+    return;
+  }
+  el.innerHTML = '';
+  prodRows.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'registro-item';
+    div.innerHTML = `
+      <div class="reg-info">
+        <span class="reg-modelo">${r.modelo_nombre}</span>
+        <span class="reg-hora">${r.hora}</span>
+      </div>
+      <div class="reg-right">
+        <span class="reg-cantidad">${r.cantidad.toLocaleString()}</span>
+        <button class="btn-del" onclick="eliminarProd(${r.id})">🗑</button>
+      </div>`;
+    el.appendChild(div);
+  });
+}
+
+// ── RENDER DOWNTIME ───────────────────────────────────────────────────────────
+function renderMuertos() {
+  const el = document.getElementById('listaMuerto');
+  const totalMin = muertosRows.reduce((s, r) => s + r.minutos, 0);
+  const totalEl = document.getElementById('listaMinutos');
+  if (!muertosRows.length) {
+    el.innerHTML = '<div class="empty-state">No downtime records</div>';
+    totalEl.classList.add('hidden');
+    return;
+  }
+  totalEl.classList.remove('hidden');
+  document.getElementById('totalMinutos').textContent = totalMin;
+  el.innerHTML = '';
+  muertosRows.forEach(r => {
+    const div = document.createElement('div');
+    div.className = 'registro-item';
+    div.innerHTML = `
+      <div class="reg-info">
+        <span class="reg-motivo">${r.motivo}</span>
+      </div>
+      <div class="reg-right">
+        <span class="reg-minutos">${r.minutos} min</span>
+        <button class="btn-del" onclick="eliminarMuerto(${r.id})">🗑</button>
+      </div>`;
+    el.appendChild(div);
+  });
+}
+
+// ── TABS ──────────────────────────────────────────────────────────────────────
+function mostrarTab(tabId, btn) {
+  document.querySelectorAll('.res-contenido').forEach(t => t.classList.remove('activa'));
+  document.querySelectorAll('.res-tab').forEach(t => t.classList.remove('activa'));
+  document.getElementById(tabId).classList.add('activa');
+  btn.classList.add('activa');
+}
+
+// ── PRODUCTION MODAL ──────────────────────────────────────────────────────────
+function abrirModalProd() {
+  modeloSel = null;
+  llenarHoras('pHora');
+  document.getElementById('pCantidad').value = '';
+  document.getElementById('nuevoModeloInput').value = '';
+  document.getElementById('nuevoModeloWrap').classList.add('hidden');
+  renderModeloGrid();
+  document.getElementById('modalProd').classList.remove('hidden');
+  setTimeout(() => document.getElementById('pCantidad').focus(), 300);
+}
+
+function renderModeloGrid() {
+  const grid = document.getElementById('modeloGrid');
+  grid.innerHTML = '';
+  modelos.forEach(m => {
+    const btn = document.createElement('button');
+    btn.className = 'btn-modelo' + (modeloSel === m.id ? ' seleccionado' : '');
+    btn.textContent = m.nombre;
+    btn.onclick = () => {
+      modeloSel = m.id;
+      document.querySelectorAll('.btn-modelo').forEach(b => b.classList.remove('seleccionado'));
+      btn.classList.add('seleccionado');
+    };
+    grid.appendChild(btn);
+  });
+}
+
+function mostrarNuevoModelo() {
+  document.getElementById('nuevoModeloWrap').classList.remove('hidden');
+  document.getElementById('nuevoModeloInput').focus();
+}
+
+async function agregarModelo() {
+  const nombre = document.getElementById('nuevoModeloInput').value.trim().toUpperCase();
+  if (!nombre) return;
+  try {
+    const m = await api('POST', '/api/modelos', { nombre });
+    modelos.push(m);
+    modeloSel = m.id;
+    document.getElementById('nuevoModeloInput').value = '';
+    document.getElementById('nuevoModeloWrap').classList.add('hidden');
+    renderModeloGrid();
+  } catch (e) { alert(e.message); }
+}
+
+async function guardarProd() {
+  if (!modeloSel) return alert('Select a pallet model');
+  const cantidad = parseInt(document.getElementById('pCantidad').value);
+  if (!cantidad || cantidad < 1) return alert('Enter the quantity');
+  const hora = document.getElementById('pHora').value;
+  try {
+    await api('POST', '/api/produccion', { turno_id: turnoActivo.id, modelo_id: modeloSel, hora, cantidad });
+    ultimaHora = hora;
+    cerrarModal('modalProd');
+    await cargarDatos();
+  } catch (e) { alert(e.message); }
+}
+
+async function eliminarProd(id) {
+  if (!confirm('Delete this record?')) return;
+  await api('DELETE', `/api/produccion/${id}`);
+  await cargarDatos();
+}
+
+// ── DOWNTIME MODAL ────────────────────────────────────────────────────────────
+function abrirModalMuerto() {
+  motivoSel = null;
+  document.getElementById('mMinutos').value = '';
+  document.getElementById('mMotivoCustom').value = '';
+  document.getElementById('otroWrap').classList.add('hidden');
+  document.querySelectorAll('.btn-motivo').forEach(b => b.classList.remove('seleccionado'));
+  document.getElementById('modalMuerto').classList.remove('hidden');
+}
+
+function selMotivo(btn) {
+  document.querySelectorAll('.btn-motivo').forEach(b => b.classList.remove('seleccionado'));
+  btn.classList.add('seleccionado');
+  motivoSel = btn.textContent;
+  if (motivoSel === 'Other') {
+    document.getElementById('otroWrap').classList.remove('hidden');
+    setTimeout(() => document.getElementById('mMotivoCustom').focus(), 100);
+  } else {
+    document.getElementById('otroWrap').classList.add('hidden');
+  }
+}
+
+async function guardarMuerto() {
+  let motivo = motivoSel;
+  if (!motivo) return alert('Select a reason');
+  if (motivo === 'Other') {
+    motivo = document.getElementById('mMotivoCustom').value.trim();
+    if (!motivo) return alert('Enter the reason for downtime');
+  }
+  const minutos = parseInt(document.getElementById('mMinutos').value);
+  if (!minutos || minutos < 1) return alert('Enter the minutes');
+  const hora = horaActual();
+  try {
+    await api('POST', '/api/tiempos', { turno_id: turnoActivo.id, motivo, minutos, hora });
+    cerrarModal('modalMuerto');
+    await cargarDatos();
+    mostrarTab('tabMuerto', document.querySelectorAll('.res-tab')[1]);
+  } catch (e) { alert(e.message); }
+}
+
+async function eliminarMuerto(id) {
+  if (!confirm('Delete this record?')) return;
+  await api('DELETE', `/api/tiempos/${id}`);
+  await cargarDatos();
+}
+
+// ── LINE CHARTS (text) ────────────────────────────────────────────────────────
+function graficarLinea(dataPorHora, titulo, unidad) {
+  const FILAS = 6;
+  const horas = Object.keys(dataPorHora).sort();
+  if (!horas.length) return `${titulo}: No data\n`;
+
+  const vals = horas.map(h => dataPorHora[h] || 0);
+  const maxVal = Math.max(...vals, 1);
+
+  const pos = vals.map(v =>
+    v === 0 ? FILAS - 1 : FILAS - 1 - Math.round((v / maxVal) * (FILAS - 1))
+  );
+
+  const W = horas.length * 2 - 1;
+  const grid = Array.from({length: FILAS}, () => Array(W).fill(' '));
+
+  pos.forEach((row, i) => {
+    grid[row][i * 2] = '●';
+    if (i < pos.length - 1) {
+      const nRow = pos[i + 1];
+      const c = i * 2 + 1;
+      if (nRow === row) {
+        grid[row][c] = '─';
+      } else if (nRow < row) {
+        grid[row][c] = '╱';
+        for (let r = nRow + 1; r < row; r++) grid[r][c] = '│';
+      } else {
+        grid[row][c] = '╲';
+        for (let r = row + 1; r < nRow; r++) grid[r][c] = '│';
+      }
+    }
+  });
+
+  const pad = String(maxVal.toLocaleString()).length;
+  let txt = `${titulo}\n`;
+  grid.forEach((row, i) => {
+    const label = i === 0 ? maxVal.toLocaleString().padStart(pad)
+                : i === FILAS - 1 ? '0'.padStart(pad)
+                : ' '.repeat(pad);
+    txt += label + '│' + row.join('') + '\n';
+  });
+  txt += ' '.repeat(pad) + '└' + '──'.repeat(horas.length) + '\n';
+  txt += ' '.repeat(pad + 1) + horas.map(h => h.substring(0, 2)).join(' ') + '\n';
+  txt += ' '.repeat(pad + 1) + `(hrs)  max: ${maxVal.toLocaleString()} ${unidad}\n`;
+  return txt;
+}
+
+// ── REPORT ────────────────────────────────────────────────────────────────────
+const MANAGER_WA = '';
+
+async function descargarExcel() {
+  if (!turnoActivo) return alert('No active shift');
+
+  const btn = document.querySelector('.btn-reporte');
+  btn.textContent = '⏳ Generating...';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch(`/api/reporte/excel/${turnoActivo.id}`, { method: 'POST' });
+    if (!res.ok) throw new Error('Error generating the report');
+    const { url, filename } = await res.json();
+
+    const [y,m,d] = turnoActivo.fecha.split('-');
+    const total = prodRows.reduce((s,r) => s + r.cantidad, 0);
+    const totalMin = muertosRows.reduce((s,r) => s + r.minutos, 0);
+
+    const msg =
+      `📊 *TARIMAS REGIAS*\n` +
+      `${turnoActivo.turno} Shift Report — ${m}/${d}/${y}\n\n` +
+      `✅ Total production: *${total.toLocaleString()} pcs*\n` +
+      `⏸ Downtime: *${totalMin} min*\n\n` +
+      `📥 Download the Excel report:\n${url}`;
+
+    const waUrl = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
+    window.open(waUrl, '_blank');
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.textContent = '📊 Generate Excel Report';
+    btn.disabled = false;
+  }
+}
+
+function compartirReporte() {
+  const [y,m,d] = turnoActivo.fecha.split('-');
+  const fecha = `${m}/${d}/${y}`;
+  const ahora = new Date().toLocaleTimeString('en-US', { hour:'2-digit', minute:'2-digit' });
+
+  const porModelo = {};
+  prodRows.forEach(r => {
+    porModelo[r.modelo_nombre] = (porModelo[r.modelo_nombre] || 0) + r.cantidad;
+  });
+  const totalProd = prodRows.reduce((s, r) => s + r.cantidad, 0);
+
+  const porHora = {};
+  prodRows.forEach(r => {
+    porHora[r.hora] = (porHora[r.hora] || 0) + r.cantidad;
+  });
+
+  const muertosPorHora = {};
+  muertosRows.forEach(r => {
+    muertosPorHora[r.hora] = (muertosPorHora[r.hora] || 0) + r.minutos;
+  });
+
+  const porMotivo = {};
+  muertosRows.forEach(r => {
+    porMotivo[r.motivo] = (porMotivo[r.motivo] || 0) + r.minutos;
+  });
+  const totalMin = muertosRows.reduce((s, r) => s + r.minutos, 0);
+
+  const horasConProduccion = Object.keys(porHora).length;
+  const eficiencia = totalMin > 0 && horasConProduccion > 0
+    ? Math.max(0, Math.round(100 - (totalMin / (horasConProduccion * 60)) * 100))
+    : 100;
+  const promXHora = horasConProduccion > 0
+    ? Math.round(totalProd / horasConProduccion)
+    : 0;
+
+  const SEP  = '================================';
+  const SEP2 = '--------------------------------';
+
+  let txt = '';
+  txt += `${SEP}\n`;
+  txt += ` TARIMAS REGIAS\n`;
+  txt += `${SEP}\n`;
+  txt += ` Production Report\n`;
+  txt += ` Shift  : ${turnoActivo.turno}\n`;
+  txt += ` Date   : ${fecha}\n`;
+  txt += ` Time   : ${ahora}\n`;
+  txt += `${SEP}\n\n`;
+
+  txt += `📦 PRODUCTION SUMMARY\n`;
+  txt += `${SEP2}\n`;
+  if (Object.keys(porModelo).length) {
+    const maxLen = Math.max(...Object.keys(porModelo).map(m => m.length));
+    Object.entries(porModelo)
+      .sort((a,b) => b[1]-a[1])
+      .forEach(([modelo, cant]) => {
+        const pad = ' '.repeat(Math.max(1, maxLen - modelo.length + 2));
+        txt += ` ${modelo}${pad}${cant.toLocaleString()} pcs\n`;
+      });
+    txt += `${SEP2}\n`;
+    txt += ` TOTAL           ${totalProd.toLocaleString()} pcs\n`;
+    txt += ` Avg/hour        ${promXHora.toLocaleString()} pcs\n`;
+  } else {
+    txt += ` No production recorded\n`;
+  }
+
+  txt += `\n📦 PRODUCTION CHART\n`;
+  txt += `${SEP2}\n`;
+  txt += graficarLinea(porHora, '', 'pcs/hr');
+
+  txt += `\n⏸ DOWNTIME CHART\n`;
+  txt += `${SEP2}\n`;
+  txt += graficarLinea(muertosPorHora, '', 'min');
+
+  txt += `\n⏸ DOWNTIME\n`;
+  txt += `${SEP2}\n`;
+  if (Object.keys(porMotivo).length) {
+    Object.entries(porMotivo)
+      .sort((a,b) => b[1]-a[1])
+      .forEach(([motivo, min]) => {
+        txt += ` ${motivo}: ${min} min\n`;
+      });
+    txt += `${SEP2}\n`;
+    txt += ` TOTAL         ${totalMin} minutes\n`;
+  } else {
+    txt += ` No downtime ✅\n`;
+  }
+
+  txt += `\n⚡ SHIFT EFFICIENCY\n`;
+  txt += `${SEP2}\n`;
+  const barraEf = '█'.repeat(Math.round(eficiencia / 10)) + '░'.repeat(10 - Math.round(eficiencia / 10));
+  txt += ` [${barraEf}] ${eficiencia}%\n`;
+
+  txt += `\n${SEP}\n`;
+  txt += ` Generated by Nailing Machine System\n`;
+  txt += `${SEP}\n`;
+
+  document.getElementById('reporteTexto').textContent = txt;
+  document.getElementById('modalReporte').classList.remove('hidden');
+}
+
+function enviarReporte() {
+  const texto = document.getElementById('reporteTexto').textContent;
+  const url = 'https://wa.me/?text=' + encodeURIComponent(texto);
+  window.open(url, '_blank');
+}
+
+// ── CLOSE SHIFT ───────────────────────────────────────────────────────────────
+async function cerrarTurno() {
+  const total = prodRows.reduce((s, r) => s + r.cantidad, 0);
+  if (!confirm(`Close shift?\nTotal produced: ${total.toLocaleString()} pieces`)) return;
+  try {
+    await api('PUT', `/api/turnos/${turnoActivo.id}/cerrar`);
+    localStorage.removeItem('turnoActivo');
+    turnoActivo = null;
+    prodRows = []; muertosRows = [];
+    document.getElementById('pantallaOp').classList.remove('activa');
+    document.getElementById('pantallaInicio').classList.add('activa');
+  } catch (e) { alert(e.message); }
+}
+
+function cerrarModal(id) { document.getElementById(id).classList.add('hidden'); }
